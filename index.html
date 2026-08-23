@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KaHooter</title>
+    <style>
+        body { font-family: system-ui, sans-serif; background: #1a1a2e; color: #eee; padding: 2rem; }
+        h1 { color: #46178f; text-shadow: 0 0 10px #a855f7; }
+        button { background: #46178f; color: #fff; border: none; padding: .6rem 1.2rem; font-size: 1rem; border-radius: 6px; cursor: pointer; }
+        button:disabled { opacity: .5; cursor: not-allowed; }
+        #status { margin: 1rem 0; font-family: monospace; color: #a855f7; }
+        #hits { list-style: none; padding: 0; }
+        #hits li { background: #16213e; padding: .5rem 1rem; margin: .3rem 0; border-left: 4px solid #46e043; border-radius: 4px; font-family: monospace; }
+        .controls { margin: 1rem 0; }
+        .controls label { margin-right: 1rem; }
+        input[type=number] { width: 80px; padding: .3rem; background: #16213e; color: #eee; border: 1px solid #46178f; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <h1>KaHooter</h1>
+    <div class="controls">
+        <label>Digits: <input type="number" id="digits" value="6" min="6" max="10"></label>
+        <label>Concurrency: <input type="number" id="conc" value="20" min="1" max="100"></label>
+        <label>Max attempts: <input type="number" id="max" value="500" min="1"></label>
+    </div>
+    <button id="scanBtn" onclick="scan()">Scan</button>
+    <button id="stopBtn" onclick="stopScan()" disabled>Stop</button>
+    <div id="status">idle</div>
+    <h3>Active sessions:</h3>
+    <ul id="hits"></ul>
+
+    <script>
+        let running = false;
+        let checked = 0;
+        let hits = 0;
+
+        function randomPin(digits) {
+            let s = '';
+            for (let i = 0; i < digits; i++) s += Math.floor(Math.random() * 10);
+            return s;
+        }
+
+        async function checkPin(pin) {
+            try {
+                const res = await fetch(`https://kahooter-proxy.onrender.com/session/${pin}`);
+                if (!res.ok) return null;
+                const data = await res.json();
+                return data.active ? { pin, data } : null;
+            } catch (e) {
+                return null;
+            }
+        }
+
+        function updateStatus() {
+            document.getElementById('status').textContent =
+                `checked: ${checked} | hits: ${hits} | ${running ? 'scanning...' : 'stopped'}`;
+        }
+
+        function addHit(pin, data) {
+            const li = document.createElement('li');
+            const twoFactor = data.twoFactorAuth ? ' [2FA]' : '';
+            const namer = data.namerator ? ' [namer]' : '';
+            li.innerHTML = `<strong>${pin}</strong>${twoFactor}${namer} — <a href="https://kahoot.it/?pin=${pin}" target="_blank" style="color:#a855f7">join</a>`;
+            document.getElementById('hits').appendChild(li);
+        }
+
+        async function worker(digits, maxAttempts) {
+            while (running && checked < maxAttempts) {
+                const pin = randomPin(digits);
+                checked++;
+                const hit = await checkPin(pin);
+                if (hit) {
+                    hits++;
+                    addHit(hit.pin, hit.data);
+                }
+                if (checked % 5 === 0) updateStatus();
+            }
+        }
+
+        async function scan() {
+            if (running) return;
+            running = true;
+            checked = 0;
+            hits = 0;
+            document.getElementById('hits').innerHTML = '';
+            document.getElementById('scanBtn').disabled = true;
+            document.getElementById('stopBtn').disabled = false;
+
+            const digits = parseInt(document.getElementById('digits').value);
+            const conc = parseInt(document.getElementById('conc').value);
+            const maxAttempts = parseInt(document.getElementById('max').value);
+
+            const workers = [];
+            for (let i = 0; i < conc; i++) workers.push(worker(digits, maxAttempts));
+            await Promise.all(workers);
+
+            running = false;
+            document.getElementById('scanBtn').disabled = false;
+            document.getElementById('stopBtn').disabled = true;
+            updateStatus();
+        }
+
+        function stopScan() {
+            running = false;
+        }
+    </script>
+</body>
+</html>
