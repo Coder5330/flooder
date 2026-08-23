@@ -36,7 +36,7 @@
     <ul id="hits"></ul>
 
     <script>
-        const PROXY = 'http://localhost:3000'; // swap for your Render URL
+        const PROXY = 'https://flooder-7tas.onrender.com';
 
         let source = null;
 
@@ -60,6 +60,7 @@
             document.getElementById('hitCount').textContent = '0';
             document.getElementById('scanBtn').disabled = true;
             document.getElementById('stopBtn').disabled = false;
+            document.getElementById('status').textContent = 'connecting...';
 
             const url = `${PROXY}/scan?start=${start}&end=${end}&conc=${conc}`;
             source = new EventSource(url);
