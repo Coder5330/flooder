@@ -5,105 +5,101 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>KaHooter</title>
     <style>
-        body { font-family: system-ui, sans-serif; background: #1a1a2e; color: #eee; padding: 2rem; }
-        h1 { color: #a855f7; text-shadow: 0 0 10px #46178f; margin: 0 0 1rem; }
-        button { background: #46178f; color: #fff; border: none; padding: .6rem 1.2rem; font-size: 1rem; border-radius: 6px; cursor: pointer; margin-right: .5rem; }
-        button:disabled { opacity: .4; cursor: not-allowed; }
-        .controls { margin: 1rem 0; display: flex; gap: 1rem; flex-wrap: wrap; align-items: center; }
-        input[type=number] { width: 100px; padding: .3rem; background: #16213e; color: #eee; border: 1px solid #46178f; border-radius: 4px; }
-        #status { margin: 1rem 0; font-family: monospace; color: #a855f7; font-size: .9rem; }
-        #bar { width: 100%; height: 14px; background: #16213e; border-radius: 7px; overflow: hidden; margin: .5rem 0 1rem; }
-        #barFill { height: 100%; width: 0%; background: linear-gradient(90deg, #46178f, #a855f7); transition: width .2s; }
-        #hits { list-style: none; padding: 0; max-height: 55vh; overflow-y: auto; }
-        #hits li { background: #16213e; padding: .5rem 1rem; margin: .3rem 0; border-left: 4px solid #46e043; border-radius: 4px; font-family: monospace; animation: fadeIn .3s; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: none; } }
-        a { color: #a855f7; }
-        .hit-count { color: #46e043; font-size: 1.4rem; font-weight: bold; }
+        body { font-family: system-ui, sans-serif; background: #121020; color: #fff; padding: 20px; }
+        h1, h2 { color: #a855f7; margin-bottom: 10px; }
+        .card { background: #1a162d; border: 1px solid #2d264f; padding: 16px; border-radius: 8px; margin-bottom: 20px; }
+        .row { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+        input, button { padding: 8px 12px; border-radius: 6px; border: 1px solid #2d264f; background: #0f0c1b; color: #fff; }
+        button { background: #7c3aed; font-weight: bold; cursor: pointer; border: none; }
+        button:hover { background: #6d28d9; }
+        #log { background: #080612; padding: 10px; border-radius: 6px; max-height: 150px; overflow-y: auto; font-family: monospace; font-size: 12px; }
     </style>
 </head>
 <body>
+
     <h1>KaHooter</h1>
-    <div class="controls">
-        <label>Start: <input type="number" id="start" value="0" min="0"></label>
-        <label>End: <input type="number" id="end" value="1000000" min="1"></label>
-        <label>Concurrency: <input type="number" id="conc" value="150" min="1" max="300"></label>
-        <button id="scanBtn" onclick="scan()">Scan</button>
-        <button id="stopBtn" onclick="stopScan()" disabled>Stop</button>
+
+    <!-- SCANNER SECTION -->
+    <div class="card">
+        <h2>PIN Scanner</h2>
+        <div class="row">
+            <label>Start: <input type="number" id="start" value="0"></label>
+            <label>End: <input type="number" id="end" value="1000000"></label>
+            <label>Concurrency: <input type="number" id="conc" value="150"></label>
+            <button onclick="startScan()">Scan</button>
+            <button onclick="stopScan()" style="background:#4c1d95;">Stop</button>
+        </div>
+        <p id="scan-status" style="color:#a855f7;">idle</p>
+        <p>Active sessions: <span id="hits-count" style="color:#22c55e;">0</span></p>
     </div>
-    <div id="bar"><div id="barFill"></div></div>
-    <div id="status">idle</div>
-    <h3>Active sessions: <span class="hit-count" id="hitCount">0</span></h3>
-    <ul id="hits"></ul>
+
+    <!-- BOT FLOOD SECTION -->
+    <div class="card">
+        <h2>Bot Flooder</h2>
+        <div class="row">
+            <label>Target Game PIN: <input type="text" id="flood-pin" placeholder="1234567"></label>
+            <label>Bot Name Base: <input type="text" id="flood-name" value="Bot"></label>
+            <label>Bot Count: <input type="number" id="flood-count" value="20" max="100"></label>
+            <button onclick="sendFlood()">Send Bots</button>
+        </div>
+        <div id="log">Ready...</div>
+    </div>
 
     <script>
-        const PROXY = 'https://flooder-7tas.onrender.com';
+        let evtSource = null;
 
-        let source = null;
-
-        function addHit(data) {
-            const li = document.createElement('li');
-            const tags = [
-                data.twoFactorAuth ? '[2FA]' : '',
-                data.namerator ? '[namer]' : '',
-                data.smartPractice ? '[practice]' : ''
-            ].filter(Boolean).join(' ');
-            li.innerHTML = `<strong>${data.pin}</strong> ${tags} — <a href="https://kahoot.it/?pin=${data.pin}" target="_blank">join</a>`;
-            document.getElementById('hits').prepend(li);
-        }
-
-        function scan() {
+        function startScan() {
+            if (evtSource) evtSource.close();
             const start = document.getElementById('start').value;
             const end = document.getElementById('end').value;
             const conc = document.getElementById('conc').value;
 
-            document.getElementById('hits').innerHTML = '';
-            document.getElementById('hitCount').textContent = '0';
-            document.getElementById('scanBtn').disabled = true;
-            document.getElementById('stopBtn').disabled = false;
-            document.getElementById('status').textContent = 'connecting...';
+            document.getElementById('scan-status').innerText = 'Scanning...';
+            evtSource = new EventSource(`/scan?start=${start}&end=${end}&conc=${conc}`);
 
-            const url = `${PROXY}/scan?start=${start}&end=${end}&conc=${conc}`;
-            source = new EventSource(url);
-
-            source.addEventListener('hit', (e) => {
+            evtSource.addEventListener('progress', (e) => {
                 const data = JSON.parse(e.data);
-                addHit(data);
-                const count = document.getElementById('hits').children.length;
-                document.getElementById('hitCount').textContent = count;
+                document.getElementById('scan-status').innerText = `Checked ${data.checked} / ${data.total}`;
+                document.getElementById('hits-count').innerText = data.hits;
             });
 
-            source.addEventListener('progress', (e) => {
-                const { checked, total, hits } = JSON.parse(e.data);
-                const pct = (checked / total * 100);
-                document.getElementById('barFill').style.width = pct.toFixed(2) + '%';
-                document.getElementById('status').textContent =
-                    `${checked.toLocaleString()} / ${total.toLocaleString()} (${pct.toFixed(2)}%) — ${hits} hits`;
+            evtSource.addEventListener('done', () => {
+                document.getElementById('scan-status').innerText = 'Completed';
+                evtSource.close();
             });
-
-            source.addEventListener('done', (e) => {
-                const { checked, hits } = JSON.parse(e.data);
-                document.getElementById('status').textContent =
-                    `done — ${checked.toLocaleString()} checked, ${hits} hits`;
-                document.getElementById('barFill').style.width = '100%';
-                cleanup();
-            });
-
-            source.onerror = () => {
-                document.getElementById('status').textContent += ' — connection lost';
-                cleanup();
-            };
         }
 
         function stopScan() {
-            if (source) { source.close(); source = null; }
-            document.getElementById('status').textContent += ' — stopped';
-            cleanup();
+            if (evtSource) {
+                evtSource.close();
+                document.getElementById('scan-status').innerText = 'Stopped';
+            }
         }
 
-        function cleanup() {
-            document.getElementById('scanBtn').disabled = false;
-            document.getElementById('stopBtn').disabled = true;
-            if (source) { source.close(); source = null; }
+        async function sendFlood() {
+            const pin = document.getElementById('flood-pin').value;
+            const name = document.getElementById('flood-name').value;
+            const count = document.getElementById('flood-count').value;
+            const log = document.getElementById('log');
+
+            log.innerText = `[INFO] Sending ${count} bots to PIN ${pin}...`;
+
+            try {
+                const res = await fetch('/flood', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ pin, name, count })
+                });
+                const data = await res.json();
+                
+                if (res.ok) {
+                    log.innerText = `[SUCCESS] Joined ${data.joined}/${data.requested} bots into room ${data.pin}`;
+                } else {
+                    log.innerText = `[ERROR] ${data.error || 'Failed to send bots'}`;
+                }
+            } catch (err) {
+                log.innerText = `[ERROR] Network error: ${err.message}`;
+            }
         }
     </script>
 </body>
