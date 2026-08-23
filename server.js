@@ -1,14 +1,18 @@
 const express = require('express');
 const cors = require('cors');
+const path = require('path');
 
 const app = express();
 app.use(cors());
+
+// Serve all static frontend files from your 'public' folder
+app.use(express.static(path.join(__dirname, 'public')));
 
 function pad(n) { return String(n).padStart(7, '0'); }
 
 async function checkPin(pin) {
     try {
-        const r = await fetch(`https://kahoot.it/reserve/session/${pin}/?${Date.now()}`, {
+        const r = await fetch(`https://kahoot.it{pin}/?${Date.now()}`, {
             headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' }
         });
         if (r.status !== 200) return null;
@@ -69,7 +73,10 @@ app.get('/session/:pin', async (req, res) => {
     result ? res.json({ active: true, ...result }) : res.status(404).json({ active: false });
 });
 
-app.get('/', (_, res) => res.send('kahooter proxy up'));
+// Fallback: Send index.html for any other route requests
+app.get('*', (_, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`proxy on http://localhost:${PORT}`));
+app.listen(PORT, () => console.log(`Proxy server running on port ${PORT}`));
