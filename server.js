@@ -4,7 +4,7 @@ const path = require('path');
 const WebSocket = require('ws');
 const http = require('http');
 const https = require('https');
-const Kahoot = require('kahoot.js-api');
+const Kahoot = require('kahoot.js-updated');
 const app = express();
 
 app.use(cors());
