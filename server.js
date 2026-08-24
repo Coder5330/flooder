@@ -4,7 +4,7 @@ const path = require('path');
 const WebSocket = require('ws');
 const http = require('http');
 const https = require('https');
-const Kahoot = require('kahoot.js-fix');
+const Kahoot = require('kahoot.js-api');
 const app = express();
 
 app.use(cors());
@@ -140,48 +140,46 @@ function spawnBotFireAndForget(pin, name, botIndex) {
     });
 }
 
-// Bot flooder using automated session solving
 app.post('/flood', async (req, res) => {
-    const { pin, name = 'Bot', count = 20 } = req.body;
-    const botCount = Math.min(Math.max(parseInt(count) || 1, 1), 100);
+    try {
+        const { pin, name = 'Bot', count = 20 } = req.body;
+        const botCount = Math.min(Math.max(parseInt(count) || 1, 1), 100);
 
-    let joinedCount = 0;
-    const bots = [];
+        let joinedCount = 0;
+        const promises = [];
 
-    const spawnBot = (index) => {
-        return new Promise((resolve) => {
-            const client = new Kahoot();
-            const botName = `${name}_${index + 1}`;
+        for (let i = 0; i < botCount; i++) {
+            const botPromise = new Promise((resolve) => {
+                const client = new Kahoot();
+                const botName = `${name}_${i + 1}`;
 
-            // Set timeout if connection stalls
-            const timer = setTimeout(() => {
-                try { client.leave(); } catch {}
-                resolve(false);
-            }, 6000);
+                const timer = setTimeout(() => {
+                    try { client.leave(); } catch {}
+                    resolve(false);
+                }, 8000);
 
-            client.join(pin, botName).then(() => {
-                clearTimeout(timer);
-                joinedCount++;
-                resolve(true);
-            }).catch(() => {
-                clearTimeout(timer);
-                resolve(false);
+                client.join(pin, botName).then(() => {
+                    clearTimeout(timer);
+                    joinedCount++;
+                    resolve(true);
+                }).catch(() => {
+                    clearTimeout(timer);
+                    resolve(false);
+                });
             });
 
-            bots.push(client);
-        });
-    };
+            promises.push(botPromise);
+            // Stagger connections slightly
+            await new Promise(r => setTimeout(r, 50));
+        }
 
-    // Stagger joins slightly (30ms) to avoid instant IP rate-limiting
-    const promises = [];
-    for (let i = 0; i < botCount; i++) {
-        promises.push(spawnBot(i));
-        await new Promise(r => setTimeout(r, 30));
+        await Promise.all(promises);
+
+        return res.json({ pin, requested: botCount, joined: joinedCount });
+    } catch (err) {
+        console.error("Flood Error:", err);
+        return res.status(500).json({ error: err.message || "Failed to process flood request" });
     }
-
-    await Promise.all(promises);
-
-    res.json({ pin, requested: botCount, joined: joinedCount });
 });
 
 const PORT = process.env.PORT || 3000;
