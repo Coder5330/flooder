@@ -50,19 +50,17 @@ async function runDiagnostic() {
     let ack = 1;
     let connectInterval = null;
 
-    // Helper to send CometD messages
-    const sendMessage = (msg) => {
+    const sendPacket = (msg) => {
         msg.id = String(ack++);
-        msg.clientId = clientId;
+        if (clientId) msg.clientId = clientId;
         ws.send(JSON.stringify([msg]));
     };
 
-    // Keep-alive loop required by Kahoot CometD engine
     const startHeartbeat = () => {
         if (connectInterval) return;
         connectInterval = setInterval(() => {
             if (ws.readyState === WebSocket.OPEN) {
-                sendMessage({
+                sendPacket({
                     channel: '/meta/connect',
                     connectionType: 'websocket'
                 });
@@ -71,14 +69,13 @@ async function runDiagnostic() {
     };
 
     ws.on('open', () => {
-        console.log("✔ WebSocket Connected! Sending /meta/handshake...");
-        ws.send(JSON.stringify([{
-            id: String(ack++),
+        console.log("✔ WebSocket Connected! Initiating /meta/handshake...");
+        sendPacket({
             version: '1.0',
             minimumVersion: '1.0',
             channel: '/meta/handshake',
             supportedConnectionTypes: ['websocket']
-        }]));
+        });
     });
 
     ws.on('message', (msgData) => {
@@ -91,36 +88,55 @@ async function runDiagnostic() {
                 clientId = msg.clientId;
                 console.log(`✔ Handshake accepted! Client ID: ${clientId}`);
                 
-                // 1. Initial /meta/connect
-                sendMessage({
+                // 1. Send initial connect
+                sendPacket({
                     channel: '/meta/connect',
                     connectionType: 'websocket'
                 });
 
-                // 2. Register Player Login
-                console.log(`[3] Registering Bot Name (${BOT_NAME})...`);
-                sendMessage({
+                // 2. Subscribe to required channels
+                sendPacket({
+                    channel: '/meta/subscribe',
+                    subscription: '/service/controller'
+                });
+                
+                sendPacket({
+                    channel: '/meta/subscribe',
+                    subscription: '/service/player'
+                });
+
+                sendPacket({
+                    channel: '/meta/subscribe',
+                    subscription: '/service/status'
+                });
+
+                // 3. Register Player Login payload inside data.content
+                console.log(`[3] Submitting login payload for name (${BOT_NAME})...`);
+                sendPacket({
                     channel: '/service/controller',
                     data: {
                         type: 'login',
                         gameid: PIN,
                         host: 'kahoot.it',
-                        name: BOT_NAME
+                        name: BOT_NAME,
+                        content: JSON.stringify({
+                            device: { userAgent: 'Mozilla/5.0', screen: { width: 1920, height: 1080 } }
+                        })
                     }
                 });
             } 
             
-            // First /meta/connect acknowledgement -> Start recurring heartbeat
+            // First /meta/connect ack -> start continuous heartbeat
             else if (msg.channel === '/meta/connect' && msg.successful) {
                 startHeartbeat();
             }
 
-            // Login Confirmation Response
+            // Login response output handling
             else if (msg.channel === '/service/controller' && msg.data?.type === 'loginResponse') {
                 if (!msg.data.error) {
-                    console.log(`\n🎉 SUCCESS! ${BOT_NAME} should now show on the screen!`);
+                    console.log(`\n🎉 SUCCESS! ${BOT_NAME} registered and active in lobby!`);
                 } else {
-                    console.error(`❌ Host Rejected Bot:`, msg.data);
+                    console.error(`❌ Host Rejected Bot:`, msg.data.error);
                 }
             }
         }
