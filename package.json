@@ -9,7 +9,7 @@
   "dependencies": {
     "cors": "^2.8.5",
     "express": "^4.19.2",
-    "kahoot.js-updated": "^3.3.1",
+    "kahoot.js-fix": "^3.3.11",
     "ws": "^8.18.0"
   },
   "engines": {
