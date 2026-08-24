@@ -1,20 +1,34 @@
 const WebSocket = require('ws');
+const vm = require('vm');
 
-const PIN = '433273'; // Replace with your active PIN
+const PIN = '433273'; // Replace with active PIN
 const BOT_NAME = `Test_${Math.floor(Math.random() * 899 + 100)}`;
 
 function solveChallenge(challengeStr) {
-    // 1. Remove the angular checks entirely (e.g., replace `if(this.angular...) console.log(...)` with nothing)
-    let sanitized = challengeStr.replace(/if\s*\([^)]*angular[^)]*\)[^{;]*({[^}]*}|;)?/gi, '');
-    
-    // 2. Safe replacement for Lodash `_.replace`
-    const lodashMock = {
-        replace: (str, regex, fn) => str.replace(regex, fn)
+    // Clean invisible/non-breaking unicode spaces from Kahoot's obfuscation
+    const cleanStr = challengeStr.replace(/[\u2000-\u200B\u202F\u205F\u200C\u200D]/g, '');
+
+    // Setup an isolated sandbox environment where 'this' and 'angular' are valid
+    const sandbox = {
+        angular: {
+            isDate: () => false,
+            isNumber: () => false,
+            isString: () => false,
+            isArray: () => false,
+            isObject: () => false,
+        },
+        _: {
+            replace: (str, regex, fn) => str.replace(regex, fn)
+        },
+        console: { log: () => {} }
     };
 
-    // 3. Execute with a bounded context
-    const fn = new Function('_', `return ${sanitized}`);
-    return fn(lodashMock);
+    // Attach properties to global inside the context
+    sandbox.window = sandbox;
+    sandbox.global = sandbox;
+
+    const context = vm.createContext(sandbox);
+    return vm.runInContext(cleanStr, context);
 }
 
 function decodeSessionToken(headerToken, challengeMask) {
