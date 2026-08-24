@@ -146,9 +146,8 @@ app.post('/flood', async (req, res) => {
         const { pin, name = 'Bot', count = 20 } = req.body;
         const botCount = Math.min(Math.max(parseInt(count) || 1, 1), 100);
 
-        // Truncate name to avoid hitting Kahoot's 15-character limit
         const safeBaseName = String(name).slice(0, 8);
-        const sessionTag = Math.random().toString(36).substring(2, 5); // 3 chars
+        const sessionTag = Math.random().toString(36).substring(2, 5);
 
         let joinedCount = 0;
         const promises = [];
@@ -156,40 +155,45 @@ app.post('/flood', async (req, res) => {
         for (let i = 0; i < botCount; i++) {
             const botPromise = new Promise((resolve) => {
                 const client = new Kahoot();
-                // Format: "Bot_1_a8f" (Max ~12-13 chars)
                 const botName = `${safeBaseName}_${i + 1}_${sessionTag}`;
 
                 const timer = setTimeout(() => {
                     try { client.leave(); } catch {}
+                    console.error(`[TIMEOUT] ${botName} failed to handshake`);
                     resolve(false);
-                }, 8000);
+                }, 10000);
 
-                client.join(pin, botName).then(() => {
+                // Listen for confirmed lobby entry from Kahoot servers
+                client.on("joined", () => {
                     clearTimeout(timer);
                     joinedCount++;
                     activeBots.push(client);
-
-                    // Auto-answer random options
-                    client.on("QuestionStart", (question) => {
-                        question.answer(Math.floor(Math.random() * 4));
-                    });
-
-                    // Handle host kick or disconnect
-                    client.on("Disconnect", () => {
-                        const index = activeBots.indexOf(client);
-                        if (index > -1) activeBots.splice(index, 1);
-                    });
-
+                    console.log(`[CONFIRMED] ${botName} is live in lobby!`);
                     resolve(true);
-                }).catch((err) => {
+                });
+
+                // Auto-answer questions when game begins
+                client.on("QuestionStart", (question) => {
+                    question.answer(Math.floor(Math.random() * 4));
+                });
+
+                // Handle room disconnects or kicks
+                client.on("Disconnect", (reason) => {
+                    const index = activeBots.indexOf(client);
+                    if (index > -1) activeBots.splice(index, 1);
+                });
+
+                // Attempt join
+                client.join(pin, botName).catch((err) => {
                     clearTimeout(timer);
-                    console.error(`Bot ${botName} failed:`, err.description || err.message || err);
+                    console.error(`[FAIL] ${botName}:`, err.description || err.message || err);
                     resolve(false);
                 });
             });
 
             promises.push(botPromise);
-            await new Promise(r => setTimeout(r, 100)); // 100ms stagger reduces rate-limiting risk
+            // 250ms delay keeps Cloudflare from silently dropping connections
+            await new Promise(r => setTimeout(r, 250));
         }
 
         await Promise.all(promises);
