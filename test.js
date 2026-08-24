@@ -1,30 +1,22 @@
 const WebSocket = require('ws');
 
-const PIN = '433273'; // Replace with active game PIN
+const PIN = '433273'; // Replace with your active PIN
 const BOT_NAME = `Test_${Math.floor(Math.random() * 899 + 100)}`;
 
-// Mock browser global environment required by Kahoot's obfuscated challenge code
 function solveChallenge(challengeStr) {
-    const sandbox = {
-        angular: {
-            isDate: () => false,
-            isNumber: () => false,
-            isString: () => false,
-            isArray: () => false,
-            isObject: () => false,
-        },
-        _: {
-            replace: (str, regex, fn) => str.replace(regex, fn)
-        },
-        console: { log: () => {} }
+    // 1. Remove the angular checks entirely (e.g., replace `if(this.angular...) console.log(...)` with nothing)
+    let sanitized = challengeStr.replace(/if\s*\([^)]*angular[^)]*\)[^{;]*({[^}]*}|;)?/gi, '');
+    
+    // 2. Safe replacement for Lodash `_.replace`
+    const lodashMock = {
+        replace: (str, regex, fn) => str.replace(regex, fn)
     };
 
-    // Execute challenge inside a safe context binding angular and Lodash
-    const fn = new Function('angular', '_', 'console', `return ${challengeStr}`);
-    return fn(sandbox.angular, sandbox._, sandbox.console);
+    // 3. Execute with a bounded context
+    const fn = new Function('_', `return ${sanitized}`);
+    return fn(lodashMock);
 }
 
-// XOR decodes the header token with solved challenge string
 function decodeSessionToken(headerToken, challengeMask) {
     const rawHeader = Buffer.from(headerToken, 'base64').toString('utf-8');
     let result = '';
@@ -46,7 +38,6 @@ async function runDiagnostic() {
     const headerToken = res.headers.get('x-kahoot-session-token');
     const data = await res.json();
     
-    // Solve the challenge with mocked global objects
     const challengeMask = solveChallenge(data.challenge);
     const solvedToken = decodeSessionToken(headerToken, challengeMask);
     
