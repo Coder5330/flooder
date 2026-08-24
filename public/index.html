@@ -13,6 +13,13 @@
         button { background: #7c3aed; font-weight: bold; cursor: pointer; border: none; }
         button:hover { background: #6d28d9; }
         #log { background: #080612; padding: 10px; border-radius: 6px; max-height: 150px; overflow-y: auto; font-family: monospace; font-size: 12px; }
+        
+        /* Session List Layout */
+        #hits-container { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; max-height: 250px; overflow-y: auto; }
+        .session-item { display: flex; justify-content: space-between; align-items: center; background: #0f0c1b; border: 1px solid #2d264f; padding: 8px 12px; border-radius: 6px; }
+        .session-item span { font-family: monospace; font-size: 14px; font-weight: bold; color: #22c55e; }
+        .use-btn { background: #059669; padding: 4px 8px; font-size: 12px; }
+        .use-btn:hover { background: #047857; }
     </style>
 </head>
 <body>
@@ -31,6 +38,9 @@
         </div>
         <p id="scan-status" style="color:#a855f7;">idle</p>
         <p>Active sessions: <span id="hits-count" style="color:#22c55e;">0</span></p>
+
+        <!-- Container for active sessions -->
+        <div id="hits-container"></div>
     </div>
 
     <!-- BOT FLOOD SECTION -->
@@ -50,6 +60,11 @@
 
         function startScan() {
             if (evtSource) evtSource.close();
+            
+            // Clear previous results container
+            document.getElementById('hits-container').innerHTML = '';
+            document.getElementById('hits-count').innerText = '0';
+
             const start = document.getElementById('start').value;
             const end = document.getElementById('end').value;
             const conc = document.getElementById('conc').value;
@@ -57,16 +72,42 @@
             document.getElementById('scan-status').innerText = 'Scanning...';
             evtSource = new EventSource(`/scan?start=${start}&end=${end}&conc=${conc}`);
 
+            // 1. LISTEN FOR HIT EVENT
+            evtSource.addEventListener('hit', (e) => {
+                const session = JSON.parse(e.data);
+                addSessionToUI(session.pin);
+            });
+
+            // 2. LISTEN FOR PROGRESS EVENT
             evtSource.addEventListener('progress', (e) => {
                 const data = JSON.parse(e.data);
                 document.getElementById('scan-status').innerText = `Checked ${data.checked} / ${data.total}`;
                 document.getElementById('hits-count').innerText = data.hits;
             });
 
+            // 3. LISTEN FOR DONE EVENT
             evtSource.addEventListener('done', () => {
                 document.getElementById('scan-status').innerText = 'Completed';
                 evtSource.close();
             });
+        }
+
+        function addSessionToUI(pin) {
+            const container = document.getElementById('hits-container');
+            
+            const div = document.createElement('div');
+            div.className = 'session-item';
+            div.innerHTML = `
+                <span>PIN: ${pin}</span>
+                <button class="use-btn" onclick="selectPin('${pin}')">Target PIN</button>
+            `;
+            
+            container.prepend(div);
+        }
+
+        function selectPin(pin) {
+            document.getElementById('flood-pin').value = pin;
+            document.getElementById('flood-pin').focus();
         }
 
         function stopScan() {
