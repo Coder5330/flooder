@@ -13,6 +13,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // Reuse persistent HTTP agent to eliminate TCP/TLS handshake overhead
 const agent = new https.Agent({ keepAlive: true, maxSockets: 1000 });
+const activeBots = [];
 
 function pad(n) { return String(n).padStart(7, '0'); }
 
@@ -161,6 +162,21 @@ app.post('/flood', async (req, res) => {
                 client.join(pin, botName).then(() => {
                     clearTimeout(timer);
                     joinedCount++;
+                    
+                    // Keep instance alive globally
+                    activeBots.push(client);
+
+                    // Optional: Auto-answer random options when a question arrives
+                    client.on("QuestionStart", (question) => {
+                        question.answer(Math.floor(Math.random() * 4));
+                    });
+
+                    // Remove from active list if kicked or disconnected by host
+                    client.on("Disconnect", () => {
+                        const index = activeBots.indexOf(client);
+                        if (index > -1) activeBots.splice(index, 1);
+                    });
+
                     resolve(true);
                 }).catch(() => {
                     clearTimeout(timer);
@@ -169,12 +185,10 @@ app.post('/flood', async (req, res) => {
             });
 
             promises.push(botPromise);
-            // Stagger connections slightly
             await new Promise(r => setTimeout(r, 50));
         }
 
         await Promise.all(promises);
-
         return res.json({ pin, requested: botCount, joined: joinedCount });
     } catch (err) {
         console.error("Flood Error:", err);
