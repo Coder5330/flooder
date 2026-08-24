@@ -1,213 +1,160 @@
 const express = require('express');
-const cors = require('cors');
-const path = require('path');
-const WebSocket = require('ws');
-const http = require('http');
-const https = require('https');
-const Kahoot = require('kahoot.js-updated');
+const puppeteer = require('puppeteer');
+
 const app = express();
-
-app.use(cors());
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
 
-// Reuse persistent HTTP agent to eliminate TCP/TLS handshake overhead
-const agent = new https.Agent({ keepAlive: true, maxSockets: 1000 });
-const activeBots = [];
+const activeSessions = [];
 
-function pad(n) { return String(n).padStart(7, '0'); }
-
-async function checkPinFast(pin) {
-    try {
-        const r = await fetch(`https://kahoot.it/reserve/session/${pin}/?${Date.now()}`, {
-            headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' },
-            agent
-        });
-        if (r.status !== 200) return null;
-        const data = await r.json().catch(() => ({}));
-        return { pin, ...data };
-    } catch { 
-        return null; 
-    }
-}
-
-// ULTRA-FAST SSE SCANNER
+// GET /scan?pin=123456
+// Checks if the PIN is valid and active
 app.get('/scan', async (req, res) => {
-    const start = parseInt(req.query.start) || 0;
-    const end = parseInt(req.query.end) || 1000000;
-    // Bumping batch size for high-throughput parallel execution
-    const batchSize = Math.min(parseInt(req.query.conc) || 500, 1000);
+    const { pin } = req.query;
 
-    res.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive'
-    });
-
-    let current = start;
-    let checked = 0;
-    let hits = 0;
-    let alive = true;
-    const total = end - start;
-
-    req.on('close', () => { alive = false; });
-
-    while (alive && current < end) {
-        const batch = [];
-        const limit = Math.min(current + batchSize, end);
-
-        for (let i = current; i < limit; i++) {
-            const pin = pad(i);
-            batch.push(
-                checkPinFast(pin).then(result => {
-                    checked++;
-                    if (result) {
-                        hits++;
-                        res.write(`event: hit\ndata: ${JSON.stringify(result)}\n\n`);
-                    }
-                })
-            );
-        }
-
-        current = limit;
-        // Process entire chunk simultaneously in network micro-batches
-        await Promise.all(batch);
-
-        if (checked % 100 === 0 || current >= end) {
-            res.write(`event: progress\ndata: ${JSON.stringify({ checked, total, hits })}\n\n`);
-        }
+    if (!pin) {
+        return res.status(400).json({ valid: false, error: "Query parameter 'pin' is required." });
     }
 
-    if (alive) {
-        res.write(`event: done\ndata: ${JSON.stringify({ checked, hits })}\n\n`);
-        res.end();
-    }
-});
-
-// INSTANT FIRE-AND-FORGET BOT FLOODER
-function spawnBotFireAndForget(pin, name, botIndex) {
-    return new Promise((resolve) => {
-        const botName = `${name}_${botIndex + 1}`;
-        const ws = new WebSocket(`wss://kahoot.it/cometd/${pin}/${Date.now()}`);
-
-        let ack = 1;
-        const timeout = setTimeout(() => {
-            ws.terminate();
-            resolve({ botName, status: 'timeout' });
-        }, 4000); // Aggressive timeout
-
-        ws.on('open', () => {
-            ws.send(JSON.stringify([{
-                id: String(ack++),
-                version: '1.0',
-                minimumVersion: '1.0',
-                channel: '/meta/handshake',
-                supportedConnectionTypes: ['websocket']
-            }]));
-        });
-
-        ws.on('message', (data) => {
-            try {
-                const [msg] = JSON.parse(data.toString());
-                if (msg.channel === '/meta/handshake' && msg.successful) {
-                    // Send connect & login instantly in a single pipeline burst
-                    ws.send(JSON.stringify([
-                        {
-                            id: String(ack++),
-                            channel: '/meta/connect',
-                            connectionType: 'websocket',
-                            clientId: msg.clientId
-                        },
-                        {
-                            id: String(ack++),
-                            channel: '/service/controller',
-                            clientId: msg.clientId,
-                            data: { type: 'login', gameid: pin, host: 'kahoot.it', name: botName }
-                        }
-                    ]));
-                } else if (msg.channel === '/service/controller') {
-                    clearTimeout(timeout);
-                    resolve({ botName, status: 'joined' });
-                }
-            } catch {
-                // Ignore parse errors
+    try {
+        console.log(`[SCAN] Checking status for PIN: ${pin}...`);
+        const response = await fetch(`https://kahoot.it/reserve/session/${pin}/?${Date.now()}`, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
+                'Referer': 'https://kahoot.it/'
             }
         });
 
-        ws.on('error', () => {
-            clearTimeout(timeout);
-            resolve({ botName, status: 'failed' });
-        });
-    });
-}
+        if (response.status === 200) {
+            const data = await response.json();
+            return res.json({
+                valid: true,
+                pin,
+                twoFactor: data.twoFactorAuth || false,
+                namerator: data.namerator || false,
+                raw: data
+            });
+        } else {
+            return res.status(404).json({
+                valid: false,
+                pin,
+                error: "Game PIN not found or game is locked/inactive."
+            });
+        }
+    } catch (err) {
+        console.error(`[SCAN ERROR]:`, err.message);
+        return res.status(500).json({ valid: false, error: "Failed to connect to Kahoot servers." });
+    }
+});
 
+// POST /flood
+// Body: { "pin": "123456", "name": "Bot", "count": 5 }
 app.post('/flood', async (req, res) => {
     try {
-        const { pin, name = 'Bot', count = 20 } = req.body;
-        const botCount = Math.min(Math.max(parseInt(count) || 1, 1), 100);
+        const { pin, name = 'Bot', count = 5 } = req.body;
+        
+        if (!pin) {
+            return res.status(400).json({ error: "Game PIN is required." });
+        }
 
+        const botCount = Math.min(Math.max(parseInt(count) || 1, 1), 50);
         const safeBaseName = String(name).slice(0, 8);
         const sessionTag = Math.random().toString(36).substring(2, 5);
+
+        console.log(`\n🚀 Starting flood request: ${botCount} bots for PIN ${pin}...`);
 
         let joinedCount = 0;
         const promises = [];
 
         for (let i = 0; i < botCount; i++) {
-            const botPromise = new Promise((resolve) => {
-                const client = new Kahoot();
-                const botName = `${safeBaseName}_${i + 1}_${sessionTag}`;
+            const botName = `${safeBaseName}_${i + 1}_${sessionTag}`;
+            
+            const botTask = (async () => {
+                let browser;
+                try {
+                    browser = await puppeteer.launch({
+                        headless: true,
+                        args: [
+                            '--no-sandbox',
+                            '--disable-setuid-sandbox',
+                            '--disable-dev-shm-usage',
+                            '--disable-accelerated-2d-canvas',
+                            '--disable-gpu'
+                        ]
+                    });
 
-                const timer = setTimeout(() => {
-                    try { client.leave(); } catch {}
-                    console.error(`[TIMEOUT] ${botName} failed to handshake`);
-                    resolve(false);
-                }, 10000);
+                    const page = await browser.newPage();
+                    
+                    await page.setRequestInterception(true);
+                    page.on('request', (req) => {
+                        if (['image', 'stylesheet', 'font'].includes(req.resourceType())) {
+                            req.abort();
+                        } else {
+                            req.continue();
+                        }
+                    });
 
-                // FIXED: Capital "Joined" event listener
-                client.on("Joined", () => {
-                    clearTimeout(timer);
+                    await page.goto(`https://kahoot.it/?pin=${pin}`, { waitUntil: 'domcontentloaded', timeout: 20000 });
+
+                    try {
+                        const pinInput = await page.$('input[data-functional-selector="game-pin-input"]');
+                        if (pinInput) {
+                            await page.type('input[data-functional-selector="game-pin-input"]', String(pin));
+                            await page.click('button[type="submit"]');
+                        }
+                    } catch (e) {}
+
+                    const nameSelector = 'input[data-functional-selector="username-input"]';
+                    await page.waitForSelector(nameSelector, { timeout: 15000 });
+                    await page.type(nameSelector, botName);
+
+                    const joinBtnSelector = 'button[data-functional-selector="join-button-username"]';
+                    await page.waitForSelector(joinBtnSelector, { timeout: 10000 });
+                    await page.click(joinBtnSelector);
+
                     joinedCount++;
-                    activeBots.push(client);
-                    console.log(`[CONFIRMED] ${botName} is live in lobby!`);
-                    resolve(true);
-                });
+                    activeSessions.push({ id: botName, browser });
+                    console.log(`[JOINED] ${botName} active in lobby!`);
+                    return true;
+                } catch (err) {
+                    console.error(`[FAILED] ${botName}:`, err.message);
+                    if (browser) await browser.close();
+                    return false;
+                }
+            })();
 
-                // Auto-answer questions when they appear
-                client.on("QuestionStart", (question) => {
-                    question.answer(Math.floor(Math.random() * 4));
-                });
-
-                // Handle room disconnects or kicks
-                client.on("Disconnect", () => {
-                    const index = activeBots.indexOf(client);
-                    if (index > -1) activeBots.splice(index, 1);
-                });
-
-                // Attempt join
-                client.join(pin, botName).catch((err) => {
-                    clearTimeout(timer);
-                    console.error(`[FAIL] ${botName}:`, err.description || err.message || err);
-                    resolve(false);
-                });
-
-                client.on("Disconnect", (reason) => {
-                    console.log(`[DISCONNECT] ${botName} dropped:`, reason);
-                    const index = activeBots.indexOf(client);
-                    if (index > -1) activeBots.splice(index, 1);
-                });
-            });
-
-            promises.push(botPromise);
-            await new Promise(r => setTimeout(r, 250));
+            promises.push(botTask);
+            await new Promise(r => setTimeout(r, 300));
         }
 
         await Promise.all(promises);
-        return res.json({ pin, requested: botCount, joined: joinedCount });
+
+        return res.json({
+            status: "success",
+            pin,
+            requested: botCount,
+            joined: joinedCount
+        });
+
     } catch (err) {
-        console.error("Flood Error:", err);
-        return res.status(500).json({ error: err.message || "Failed to process flood request" });
+        console.error("Server Flood Error:", err);
+        return res.status(500).json({ error: err.message || "Failed to process request" });
     }
 });
 
+// POST /clear
+app.post('/clear', async (req, res) => {
+    const total = activeSessions.length;
+    while (activeSessions.length > 0) {
+        const session = activeSessions.pop();
+        try {
+            await session.browser.close();
+        } catch (e) {}
+    }
+    console.log(`🧹 Cleared ${total} bot sessions.`);
+    return res.json({ message: `Closed ${total} active bot instances.` });
+});
+
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Fast Server active on port ${PORT}`));
+app.listen(PORT, () => {
+    console.log(`✅ Server running on port ${PORT}`);
+});
