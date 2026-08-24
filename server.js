@@ -189,6 +189,12 @@ app.post('/flood', async (req, res) => {
                     console.error(`[FAIL] ${botName}:`, err.description || err.message || err);
                     resolve(false);
                 });
+
+                client.on("Disconnect", (reason) => {
+                    console.log(`[DISCONNECT] ${botName} dropped:`, reason);
+                    const index = activeBots.indexOf(client);
+                    if (index > -1) activeBots.splice(index, 1);
+                });
             });
 
             promises.push(botPromise);
