@@ -30,7 +30,14 @@ function decodeSessionToken(headerToken, challengeMask) {
 async function runDiagnostic() {
     console.log(`[1] Fetching session token & challenge for PIN: ${PIN}...`);
     
-    const res = await fetch(`https://kahoot.it/reserve/session/${PIN}/?${Date.now()}`);
+    const res = await fetch(`https://kahoot.it/reserve/session/${PIN}/?${Date.now()}`, {
+        headers: {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Accept': 'application/json, text/plain, */*',
+            'Referer': 'https://kahoot.it/'
+        }
+    });
+
     if (res.status !== 200) {
         console.error("❌ Invalid PIN or game not active.");
         return;
@@ -43,16 +50,35 @@ async function runDiagnostic() {
     const solvedToken = decodeSessionToken(headerToken, challengeMask);
     
     console.log(`✔ Decoded Session Token: ${solvedToken}`);
-    console.log(`\n[2] Connecting to WebSocket with token...`);
+    console.log(`\n[2] Connecting to WebSocket with spoofed browser headers...`);
 
-    const ws = new WebSocket(`wss://kahoot.it/cometd/${PIN}/${solvedToken}`);
+    // KEY FIX 1: Pass full browser headers so Cloudflare doesn't sandbox the socket
+    const ws = new WebSocket(`wss://kahoot.it/cometd/${PIN}/${solvedToken}`, {
+        headers: {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Origin': 'https://kahoot.it',
+            'Referer': `https://kahoot.it/?pin=${PIN}`,
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache'
+        }
+    });
+
     let clientId = null;
     let ack = 1;
+    let serverAck = 0;
     let connectInterval = null;
 
     const sendPacket = (msg) => {
         msg.id = String(ack++);
         if (clientId) msg.clientId = clientId;
+        
+        // KEY FIX 2: Send mandatory ext ack metadata
+        msg.ext = {
+            ack: serverAck,
+            timesync: { tc: Date.now(), l: 0, o: 0 }
+        };
+
         ws.send(JSON.stringify([msg]));
     };
 
@@ -69,7 +95,7 @@ async function runDiagnostic() {
     };
 
     ws.on('open', () => {
-        console.log("✔ WebSocket Connected! Initiating /meta/handshake...");
+        console.log("✔ WebSocket Connected! Sending handshake...");
         sendPacket({
             version: '1.0',
             minimumVersion: '1.0',
@@ -83,6 +109,11 @@ async function runDiagnostic() {
         const msgs = JSON.parse(raw);
 
         for (const msg of msgs) {
+            // Update ack counter if sent by server
+            if (msg.ext?.ack !== undefined) {
+                serverAck = msg.ext.ack;
+            }
+
             // Handshake Response
             if (msg.channel === '/meta/handshake' && msg.successful) {
                 clientId = msg.clientId;
@@ -94,24 +125,13 @@ async function runDiagnostic() {
                     connectionType: 'websocket'
                 });
 
-                // 2. Subscribe to required channels
-                sendPacket({
-                    channel: '/meta/subscribe',
-                    subscription: '/service/controller'
-                });
-                
-                sendPacket({
-                    channel: '/meta/subscribe',
-                    subscription: '/service/player'
-                });
+                // 2. Subscribe to required service topics
+                sendPacket({ channel: '/meta/subscribe', subscription: '/service/controller' });
+                sendPacket({ channel: '/meta/subscribe', subscription: '/service/player' });
+                sendPacket({ channel: '/meta/subscribe', subscription: '/service/status' });
 
-                sendPacket({
-                    channel: '/meta/subscribe',
-                    subscription: '/service/status'
-                });
-
-                // 3. Register Player Login payload inside data.content
-                console.log(`[3] Submitting login payload for name (${BOT_NAME})...`);
+                // 3. Register Player Login
+                console.log(`[3] Registering Bot Name (${BOT_NAME})...`);
                 sendPacket({
                     channel: '/service/controller',
                     data: {
@@ -120,21 +140,19 @@ async function runDiagnostic() {
                         host: 'kahoot.it',
                         name: BOT_NAME,
                         content: JSON.stringify({
-                            device: { userAgent: 'Mozilla/5.0', screen: { width: 1920, height: 1080 } }
+                            device: { userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)', screen: { width: 1920, height: 1080 } }
                         })
                     }
                 });
             } 
             
-            // First /meta/connect ack -> start continuous heartbeat
             else if (msg.channel === '/meta/connect' && msg.successful) {
                 startHeartbeat();
             }
 
-            // Login response output handling
             else if (msg.channel === '/service/controller' && msg.data?.type === 'loginResponse') {
                 if (!msg.data.error) {
-                    console.log(`\n🎉 SUCCESS! ${BOT_NAME} registered and active in lobby!`);
+                    console.log(`\n🎉 SUCCESS! ${BOT_NAME} will now pop up in the lobby!`);
                 } else {
                     console.error(`❌ Host Rejected Bot:`, msg.data.error);
                 }
