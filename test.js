@@ -28,7 +28,7 @@ function decodeSessionToken(headerToken, challengeMask) {
 }
 
 async function runDiagnostic() {
-    console.log(`[1] Fetching session token & challenge for PIN: ${PIN}...`);
+    console.log(`[1] Fetching session token & cookies for PIN: ${PIN}...`);
     
     const res = await fetch(`https://kahoot.it/reserve/session/${PIN}/?${Date.now()}`, {
         headers: {
@@ -43,6 +43,10 @@ async function runDiagnostic() {
         return;
     }
 
+    // Capture Cloudflare & Kahoot cookies from the HTTP response
+    const setCookieHeader = res.headers.get('set-cookie');
+    const cookieString = setCookieHeader ? setCookieHeader.split(',').map(c => c.split(';')[0]).join('; ') : '';
+
     const headerToken = res.headers.get('x-kahoot-session-token');
     const data = await res.json();
     
@@ -50,17 +54,16 @@ async function runDiagnostic() {
     const solvedToken = decodeSessionToken(headerToken, challengeMask);
     
     console.log(`✔ Decoded Session Token: ${solvedToken}`);
-    console.log(`\n[2] Connecting to WebSocket with spoofed browser headers...`);
+    console.log(`\n[2] Connecting to WebSocket with captured cookies...`);
 
-    // KEY FIX 1: Pass full browser headers so Cloudflare doesn't sandbox the socket
+    // Pass the cookies in the WebSocket header so Cloudflare authenticates the stream
     const ws = new WebSocket(`wss://kahoot.it/cometd/${PIN}/${solvedToken}`, {
         headers: {
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
             'Origin': 'https://kahoot.it',
             'Referer': `https://kahoot.it/?pin=${PIN}`,
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Cache-Control': 'no-cache',
-            'Pragma': 'no-cache'
+            'Cookie': cookieString,
+            'Accept-Language': 'en-US,en;q=0.9'
         }
     });
 
@@ -72,13 +75,10 @@ async function runDiagnostic() {
     const sendPacket = (msg) => {
         msg.id = String(ack++);
         if (clientId) msg.clientId = clientId;
-        
-        // KEY FIX 2: Send mandatory ext ack metadata
         msg.ext = {
             ack: serverAck,
             timesync: { tc: Date.now(), l: 0, o: 0 }
         };
-
         ws.send(JSON.stringify([msg]));
     };
 
@@ -95,7 +95,7 @@ async function runDiagnostic() {
     };
 
     ws.on('open', () => {
-        console.log("✔ WebSocket Connected! Sending handshake...");
+        console.log("✔ WebSocket Connected with Cookies! Sending handshake...");
         sendPacket({
             version: '1.0',
             minimumVersion: '1.0',
@@ -109,28 +109,23 @@ async function runDiagnostic() {
         const msgs = JSON.parse(raw);
 
         for (const msg of msgs) {
-            // Update ack counter if sent by server
             if (msg.ext?.ack !== undefined) {
                 serverAck = msg.ext.ack;
             }
 
-            // Handshake Response
             if (msg.channel === '/meta/handshake' && msg.successful) {
                 clientId = msg.clientId;
                 console.log(`✔ Handshake accepted! Client ID: ${clientId}`);
                 
-                // 1. Send initial connect
                 sendPacket({
                     channel: '/meta/connect',
                     connectionType: 'websocket'
                 });
 
-                // 2. Subscribe to required service topics
                 sendPacket({ channel: '/meta/subscribe', subscription: '/service/controller' });
                 sendPacket({ channel: '/meta/subscribe', subscription: '/service/player' });
                 sendPacket({ channel: '/meta/subscribe', subscription: '/service/status' });
 
-                // 3. Register Player Login
                 console.log(`[3] Registering Bot Name (${BOT_NAME})...`);
                 sendPacket({
                     channel: '/service/controller',
@@ -152,7 +147,7 @@ async function runDiagnostic() {
 
             else if (msg.channel === '/service/controller' && msg.data?.type === 'loginResponse') {
                 if (!msg.data.error) {
-                    console.log(`\n🎉 SUCCESS! ${BOT_NAME} will now pop up in the lobby!`);
+                    console.log(`\n🎉 SUCCESS! ${BOT_NAME} is fully authenticated and visible in the lobby!`);
                 } else {
                     console.error(`❌ Host Rejected Bot:`, msg.data.error);
                 }
