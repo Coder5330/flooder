@@ -162,24 +162,19 @@ app.post('/flood', async (req, res) => {
                 client.join(pin, botName).then(() => {
                     clearTimeout(timer);
                     joinedCount++;
-                    
-                    // Keep instance alive globally
                     activeBots.push(client);
-
-                    // Optional: Auto-answer random options when a question arrives
                     client.on("QuestionStart", (question) => {
                         question.answer(Math.floor(Math.random() * 4));
                     });
-
-                    // Remove from active list if kicked or disconnected by host
                     client.on("Disconnect", () => {
                         const index = activeBots.indexOf(client);
                         if (index > -1) activeBots.splice(index, 1);
                     });
-
                     resolve(true);
-                }).catch(() => {
+                }).catch((err) => {
                     clearTimeout(timer);
+                    // Log the actual failure reason (e.g., "Invalid PIN", "Rate Limited", "Challenge Failed")
+                    console.error(`Bot ${botName} failed:`, err.message || err);
                     resolve(false);
                 });
             });
