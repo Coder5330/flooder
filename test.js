@@ -5,25 +5,12 @@ const PIN = '433273'; // Replace with active PIN
 const BOT_NAME = `Test_${Math.floor(Math.random() * 899 + 100)}`;
 
 function solveChallenge(challengeStr) {
-    // Clean invisible/non-breaking unicode spaces from Kahoot's obfuscation
     const cleanStr = challengeStr.replace(/[\u2000-\u200B\u202F\u205F\u200C\u200D]/g, '');
-
-    // Setup an isolated sandbox environment where 'this' and 'angular' are valid
     const sandbox = {
-        angular: {
-            isDate: () => false,
-            isNumber: () => false,
-            isString: () => false,
-            isArray: () => false,
-            isObject: () => false,
-        },
-        _: {
-            replace: (str, regex, fn) => str.replace(regex, fn)
-        },
+        angular: { isDate: () => false, isNumber: () => false, isString: () => false, isArray: () => false, isObject: () => false },
+        _: { replace: (str, regex, fn) => str.replace(regex, fn) },
         console: { log: () => {} }
     };
-
-    // Attach properties to global inside the context
     sandbox.window = sandbox;
     sandbox.global = sandbox;
 
@@ -61,6 +48,27 @@ async function runDiagnostic() {
     const ws = new WebSocket(`wss://kahoot.it/cometd/${PIN}/${solvedToken}`);
     let clientId = null;
     let ack = 1;
+    let connectInterval = null;
+
+    // Helper to send CometD messages
+    const sendMessage = (msg) => {
+        msg.id = String(ack++);
+        msg.clientId = clientId;
+        ws.send(JSON.stringify([msg]));
+    };
+
+    // Keep-alive loop required by Kahoot CometD engine
+    const startHeartbeat = () => {
+        if (connectInterval) return;
+        connectInterval = setInterval(() => {
+            if (ws.readyState === WebSocket.OPEN) {
+                sendMessage({
+                    channel: '/meta/connect',
+                    connectionType: 'websocket'
+                });
+            }
+        }, 5000);
+    };
 
     ws.on('open', () => {
         console.log("✔ WebSocket Connected! Sending /meta/handshake...");
@@ -75,43 +83,50 @@ async function runDiagnostic() {
 
     ws.on('message', (msgData) => {
         const raw = msgData.toString();
-        console.log(`\n[SERVER INCOMING]:`, raw);
+        const msgs = JSON.parse(raw);
 
-        const [msg] = JSON.parse(raw);
-
-        if (msg.channel === '/meta/handshake' && msg.successful) {
-            clientId = msg.clientId;
-            console.log(`✔ Handshake accepted! Client ID: ${clientId}`);
-            console.log(`[3] Registering Bot Name (${BOT_NAME})...`);
-
-            ws.send(JSON.stringify([
-                {
-                    id: String(ack++),
+        for (const msg of msgs) {
+            // Handshake Response
+            if (msg.channel === '/meta/handshake' && msg.successful) {
+                clientId = msg.clientId;
+                console.log(`✔ Handshake accepted! Client ID: ${clientId}`);
+                
+                // 1. Initial /meta/connect
+                sendMessage({
                     channel: '/meta/connect',
-                    connectionType: 'websocket',
-                    clientId: clientId
-                },
-                {
-                    id: String(ack++),
+                    connectionType: 'websocket'
+                });
+
+                // 2. Register Player Login
+                console.log(`[3] Registering Bot Name (${BOT_NAME})...`);
+                sendMessage({
                     channel: '/service/controller',
-                    clientId: clientId,
                     data: {
                         type: 'login',
                         gameid: PIN,
                         host: 'kahoot.it',
                         name: BOT_NAME
                     }
+                });
+            } 
+            
+            // First /meta/connect acknowledgement -> Start recurring heartbeat
+            else if (msg.channel === '/meta/connect' && msg.successful) {
+                startHeartbeat();
+            }
+
+            // Login Confirmation Response
+            else if (msg.channel === '/service/controller' && msg.data?.type === 'loginResponse') {
+                if (!msg.data.error) {
+                    console.log(`\n🎉 SUCCESS! ${BOT_NAME} should now show on the screen!`);
+                } else {
+                    console.error(`❌ Host Rejected Bot:`, msg.data);
                 }
-            ]));
-        } else if (msg.channel === '/service/controller' && msg.data?.type === 'loginResponse') {
-            if (!msg.data.error) {
-                console.log(`\n🎉 SUCCESS! ${BOT_NAME} is officially rendered in the Kahoot lobby!`);
-            } else {
-                console.error(`❌ Host Rejected Bot:`, msg.data);
             }
         }
     });
 
+    ws.on('close', () => clearInterval(connectInterval));
     ws.on('error', (err) => console.error("❌ WS Error:", err.message));
 }
 
