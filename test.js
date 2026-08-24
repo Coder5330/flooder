@@ -1,37 +1,51 @@
 const WebSocket = require('ws');
 
-const PIN = '433273'; // Replace with your active game PIN
-const BOT_NAME = `Test_${Math.floor(Math.random() * 8999 + 1000)}`;
+const PIN = '433273'; // Your active PIN
+const BOT_NAME = `Test_${Math.floor(Math.random() * 899 + 100)}`;
+
+// Solves Kahoot's string shift challenge string
+function solveChallenge(challengeStr) {
+    const match = challengeStr.match(/decode\.call\(this,\s*['"]([^'"]+)['"]\)/);
+    if (!match) return challengeStr;
+    const offsetEval = eval(challengeStr.replace(/decode\.call\(this,\s*['"]([^'"]+)['"]\)/, '0'));
+    return match[1]; 
+}
+
+// XOR decodes the header token with the solved challenge
+function decodeSessionToken(headerToken, challengeMask) {
+    const rawHeader = Buffer.from(headerToken, 'base64').toString('utf-8');
+    let result = '';
+    for (let i = 0; i < rawHeader.length; i++) {
+        result += String.fromCharCode(rawHeader.charCodeAt(i) ^ challengeMask.charCodeAt(i % challengeMask.length));
+    }
+    return result;
+}
 
 async function runDiagnostic() {
-    console.log(`[1] Fetching reserve session token for PIN: ${PIN}...`);
+    console.log(`[1] Fetching session token & challenge for PIN: ${PIN}...`);
     
-    // Step 1: Session Token Exchange
-    let response;
-    try {
-        response = await fetch(`https://kahoot.it/reserve/session/${PIN}/?${Date.now()}`);
-    } catch (err) {
-        console.error("❌ Failed to contact Kahoot session reserve:", err.message);
+    const res = await fetch(`https://kahoot.it/reserve/session/${PIN}/?${Date.now()}`);
+    if (res.status !== 200) {
+        console.error("❌ Invalid PIN or game not active.");
         return;
     }
 
-    console.log(`[HTTP Status]: ${response.status}`);
-    const rawHeaderToken = response.headers.get('x-kahoot-session-token');
-    console.log(`[Session Header Token]:`, rawHeaderToken || "NONE (PIN may be invalid/closed)");
+    const headerToken = res.headers.get('x-kahoot-session-token');
+    const data = await res.json();
+    
+    // Decode challenge
+    const challengeMask = eval(data.challenge);
+    const solvedToken = decodeSessionToken(headerToken, challengeMask);
+    
+    console.log(`✔ Decoded Session Token: ${solvedToken}`);
+    console.log(`\n[2] Connecting to WebSocket with token...`);
 
-    if (response.status !== 200) {
-        console.error("❌ Game PIN is invalid, expired, or locked.");
-        return;
-    }
-
-    // Step 2: Open WebSocket Connection
-    console.log(`\n[2] Connecting to Kahoot WebSocket engine...`);
-    const ws = new WebSocket(`wss://kahoot.it/cometd/${PIN}/${Date.now()}`);
+    const ws = new WebSocket(`wss://kahoot.it/cometd/${PIN}/${solvedToken}`);
     let clientId = null;
     let ack = 1;
 
     ws.on('open', () => {
-        console.log("✔ WebSocket TCP connected. Sending Handshake...");
+        console.log("✔ WebSocket Connected! Sending /meta/handshake...");
         ws.send(JSON.stringify([{
             id: String(ack++),
             version: '1.0',
@@ -41,57 +55,46 @@ async function runDiagnostic() {
         }]));
     });
 
-    ws.on('message', (data) => {
-        const raw = data.toString();
+    ws.on('message', (msgData) => {
+        const raw = msgData.toString();
         console.log(`\n[SERVER INCOMING]:`, raw);
 
-        try {
-            const [msg] = JSON.parse(raw);
+        const [msg] = JSON.parse(raw);
 
-            // Handshake Acknowledgement
-            if (msg.channel === '/meta/handshake') {
-                if (msg.successful) {
-                    clientId = msg.clientId;
-                    console.log(`✔ Handshake successful! Client ID: ${clientId}`);
-                    console.log(`[3] Sending Connection & Login Bursts...`);
+        if (msg.channel === '/meta/handshake' && msg.successful) {
+            clientId = msg.clientId;
+            console.log(`✔ Handshake accepted! Client ID: ${clientId}`);
+            console.log(`[3] Registering Bot Name (${BOT_NAME})...`);
 
-                    ws.send(JSON.stringify([
-                        {
-                            id: String(ack++),
-                            channel: '/meta/connect',
-                            connectionType: 'websocket',
-                            clientId: clientId
-                        },
-                        {
-                            id: String(ack++),
-                            channel: '/service/controller',
-                            clientId: clientId,
-                            data: {
-                                type: 'login',
-                                gameid: PIN,
-                                host: 'kahoot.it',
-                                name: BOT_NAME
-                            }
-                        }
-                    ]));
-                } else {
-                    console.error("❌ Handshake rejected by server:", msg);
+            ws.send(JSON.stringify([
+                {
+                    id: String(ack++),
+                    channel: '/meta/connect',
+                    connectionType: 'websocket',
+                    clientId: clientId
+                },
+                {
+                    id: String(ack++),
+                    channel: '/service/controller',
+                    clientId: clientId,
+                    data: {
+                        type: 'login',
+                        gameid: PIN,
+                        host: 'kahoot.it',
+                        name: BOT_NAME
+                    }
                 }
-            } 
-            // Controller Response
-            else if (msg.channel === '/service/controller') {
-                if (msg.data && msg.data.type === 'loginResponse') {
-                    console.log(`\n--- LOGIN RESPONSE RESULT ---`);
-                    console.log(msg.data);
-                }
+            ]));
+        } else if (msg.channel === '/service/controller' && msg.data?.type === 'loginResponse') {
+            if (!msg.data.error) {
+                console.log(`\n🎉 SUCCESS! ${BOT_NAME} is officially rendered in the Kahoot lobby!`);
+            } else {
+                console.error(`❌ Host Rejected Bot:`, msg.data);
             }
-        } catch (e) {
-            console.error("Failed to parse incoming frame:", e);
         }
     });
 
     ws.on('error', (err) => console.error("❌ WS Error:", err.message));
-    ws.on('close', (code, reason) => console.log(`ℹ WS Closed with code ${code}. Reason: ${reason}`));
 }
 
 runDiagnostic();
