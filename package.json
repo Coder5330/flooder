@@ -2,9 +2,9 @@
   "name": "kahoot-bot-test",
   "version": "1.0.0",
   "description": "Kahoot bot integration test",
-  "main": "test.js",
+  "main": "server.js",
   "scripts": {
-    "start": "node test.js"
+    "start": "node server.js"
   },
   "dependencies": {
     "puppeteer": "^22.0.0",
