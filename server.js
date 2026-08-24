@@ -6,18 +6,40 @@ app.use(express.json());
 app.use(express.static('public'));
 
 const activeSessions = [];
+let sharedBrowser = null;
+
+// Helper to get or launch a single shared browser instance
+async function getBrowser() {
+    if (sharedBrowser && sharedBrowser.connected) {
+        return sharedBrowser;
+    }
+    sharedBrowser = await puppeteer.launch({
+        headless: true,
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--disable-gpu',
+            '--disable-background-networking',
+            '--disable-default-apps',
+            '--disable-extensions',
+            '--disable-sync',
+            '--disable-translate',
+            '--metrics-recording-only',
+            '--no-first-run',
+            '--safebrowsing-disable-auto-update'
+        ]
+    });
+    return sharedBrowser;
+}
 
 // GET /scan?pin=123456
-// Checks if the PIN is valid and active
 app.get('/scan', async (req, res) => {
     const { pin } = req.query;
-
-    if (!pin) {
-        return res.status(400).json({ valid: false, error: "Query parameter 'pin' is required." });
-    }
+    if (!pin) return res.status(400).json({ valid: false, error: "Query parameter 'pin' is required." });
 
     try {
-        console.log(`[SCAN] Checking status for PIN: ${pin}...`);
         const response = await fetch(`https://kahoot.it/reserve/session/${pin}/?${Date.now()}`, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
@@ -27,41 +49,27 @@ app.get('/scan', async (req, res) => {
 
         if (response.status === 200) {
             const data = await response.json();
-            return res.json({
-                valid: true,
-                pin,
-                twoFactor: data.twoFactorAuth || false,
-                namerator: data.namerator || false,
-                raw: data
-            });
+            return res.json({ valid: true, pin, raw: data });
         } else {
-            return res.status(404).json({
-                valid: false,
-                pin,
-                error: "Game PIN not found or game is locked/inactive."
-            });
+            return res.status(404).json({ valid: false, pin, error: "Game PIN invalid or locked." });
         }
     } catch (err) {
-        console.error(`[SCAN ERROR]:`, err.message);
-        return res.status(500).json({ valid: false, error: "Failed to connect to Kahoot servers." });
+        return res.status(500).json({ valid: false, error: "Failed to connect to Kahoot." });
     }
 });
 
 // POST /flood
-// Body: { "pin": "123456", "name": "Bot", "count": 5 }
 app.post('/flood', async (req, res) => {
     try {
         const { pin, name = 'Bot', count = 5 } = req.body;
-        
-        if (!pin) {
-            return res.status(400).json({ error: "Game PIN is required." });
-        }
+        if (!pin) return res.status(400).json({ error: "Game PIN is required." });
 
         const botCount = Math.min(Math.max(parseInt(count) || 1, 1), 50);
         const safeBaseName = String(name).slice(0, 8);
         const sessionTag = Math.random().toString(36).substring(2, 5);
 
-        console.log(`\n🚀 Starting flood request: ${botCount} bots for PIN ${pin}...`);
+        console.log(`\n🚀 Fast-flooding ${botCount} bots for PIN ${pin}...`);
+        const mainBrowser = await getBrowser();
 
         let joinedCount = 0;
         const promises = [];
@@ -70,32 +78,26 @@ app.post('/flood', async (req, res) => {
             const botName = `${safeBaseName}_${i + 1}_${sessionTag}`;
             
             const botTask = (async () => {
-                let browser;
+                let context;
                 try {
-                    browser = await puppeteer.launch({
-                        headless: true,
-                        args: [
-                            '--no-sandbox',
-                            '--disable-setuid-sandbox',
-                            '--disable-dev-shm-usage',
-                            '--disable-accelerated-2d-canvas',
-                            '--disable-gpu'
-                        ]
-                    });
+                    // Create an isolated incognito tab session instead of a full browser
+                    context = await mainBrowser.createBrowserContext();
+                    const page = await context.newPage();
 
-                    const page = await browser.newPage();
-                    
+                    // Block everything not strictly needed for execution
                     await page.setRequestInterception(true);
                     page.on('request', (req) => {
-                        if (['image', 'stylesheet', 'font'].includes(req.resourceType())) {
+                        const type = req.resourceType();
+                        if (['image', 'stylesheet', 'font', 'media', 'other'].includes(type)) {
                             req.abort();
                         } else {
                             req.continue();
                         }
                     });
 
-                    await page.goto(`https://kahoot.it/?pin=${pin}`, { waitUntil: 'domcontentloaded', timeout: 20000 });
+                    await page.goto(`https://kahoot.it/?pin=${pin}`, { waitUntil: 'domcontentloaded', timeout: 15000 });
 
+                    // Handle PIN input if present
                     try {
                         const pinInput = await page.$('input[data-functional-selector="game-pin-input"]');
                         if (pinInput) {
@@ -104,27 +106,30 @@ app.post('/flood', async (req, res) => {
                         }
                     } catch (e) {}
 
+                    // Enter Bot Nickname
                     const nameSelector = 'input[data-functional-selector="username-input"]';
-                    await page.waitForSelector(nameSelector, { timeout: 15000 });
+                    await page.waitForSelector(nameSelector, { timeout: 10000 });
                     await page.type(nameSelector, botName);
 
+                    // Click Join
                     const joinBtnSelector = 'button[data-functional-selector="join-button-username"]';
-                    await page.waitForSelector(joinBtnSelector, { timeout: 10000 });
+                    await page.waitForSelector(joinBtnSelector, { timeout: 8000 });
                     await page.click(joinBtnSelector);
 
                     joinedCount++;
-                    activeSessions.push({ id: botName, browser });
-                    console.log(`[JOINED] ${botName} active in lobby!`);
+                    activeSessions.push({ id: botName, context });
+                    console.log(`[JOINED] ${botName}`);
                     return true;
                 } catch (err) {
                     console.error(`[FAILED] ${botName}:`, err.message);
-                    if (browser) await browser.close();
+                    if (context) await context.close();
                     return false;
                 }
             })();
 
             promises.push(botTask);
-            await new Promise(r => setTimeout(r, 300));
+            // Reduced delay to 75ms for faster entry without completely locking the CPU
+            await new Promise(r => setTimeout(r, 75));
         }
 
         await Promise.all(promises);
@@ -148,14 +153,22 @@ app.post('/clear', async (req, res) => {
     while (activeSessions.length > 0) {
         const session = activeSessions.pop();
         try {
-            await session.browser.close();
+            await session.context.close();
         } catch (e) {}
     }
-    console.log(`🧹 Cleared ${total} bot sessions.`);
+    
+    if (sharedBrowser) {
+        try {
+            await sharedBrowser.close();
+            sharedBrowser = null;
+        } catch (e) {}
+    }
+
+    console.log(`🧹 Cleared ${total} bot sessions and reset browser.`);
     return res.json({ message: `Closed ${total} active bot instances.` });
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`✅ Server running on port ${PORT}`);
+    console.log(`✅ High-Performance Server running on port ${PORT}`);
 });
