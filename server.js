@@ -163,8 +163,8 @@ app.post('/flood', async (req, res) => {
                     resolve(false);
                 }, 10000);
 
-                // Listen for confirmed lobby entry from Kahoot servers
-                client.on("joined", () => {
+                // FIXED: Capital "Joined" event listener
+                client.on("Joined", () => {
                     clearTimeout(timer);
                     joinedCount++;
                     activeBots.push(client);
@@ -172,13 +172,13 @@ app.post('/flood', async (req, res) => {
                     resolve(true);
                 });
 
-                // Auto-answer questions when game begins
+                // Auto-answer questions when they appear
                 client.on("QuestionStart", (question) => {
                     question.answer(Math.floor(Math.random() * 4));
                 });
 
                 // Handle room disconnects or kicks
-                client.on("Disconnect", (reason) => {
+                client.on("Disconnect", () => {
                     const index = activeBots.indexOf(client);
                     if (index > -1) activeBots.splice(index, 1);
                 });
@@ -192,7 +192,6 @@ app.post('/flood', async (req, res) => {
             });
 
             promises.push(botPromise);
-            // 250ms delay keeps Cloudflare from silently dropping connections
             await new Promise(r => setTimeout(r, 250));
         }
 
