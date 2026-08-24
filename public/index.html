@@ -122,15 +122,23 @@
             const name = document.getElementById('flood-name').value;
             const count = document.getElementById('flood-count').value;
             const log = document.getElementById('log');
-
+        
             log.innerText = `[INFO] Sending ${count} bots to PIN ${pin}...`;
-
+        
             try {
                 const res = await fetch('/flood', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ pin, name, count })
                 });
+        
+                // SAFELY CHECK IF RESPONSE IS JSON
+                const contentType = res.headers.get('content-type');
+                if (!contentType || !contentType.includes('application/json')) {
+                    const text = await res.text();
+                    throw new Error(`Server returned non-JSON error (Status ${res.status}). Check server logs.`);
+                }
+        
                 const data = await res.json();
                 
                 if (res.ok) {
@@ -139,7 +147,7 @@
                     log.innerText = `[ERROR] ${data.error || 'Failed to send bots'}`;
                 }
             } catch (err) {
-                log.innerText = `[ERROR] Network error: ${err.message}`;
+                log.innerText = `[ERROR] ${err.message}`;
             }
         }
     </script>
